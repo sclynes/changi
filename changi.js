@@ -4,20 +4,20 @@ const ProgressBar = require('progress');
 const Bottleneck = require('bottleneck');
 
 const getAllProducts = async () => {
-    console.log('Getting Products');
+    console.log('Retrieving Products');
     var bar = new ProgressBar(`[:bar] :rate/pps :percent :etas`, {complete: '=', incomplete: ' ', width: 30, total: 1});
-    const limiter = new Bottleneck({minTime: 10, maxConcurrent: 50});
-    const limitedQuery = limiter.wrap(getAllProductsRequest);
+    const limiter = new Bottleneck({minTime: 10, maxConcurrent: 50}); //set up request limiter
+    const limitedQuery = limiter.wrap(getAllProductsRequest);   //limit the provided function
 
     let currentPage = 0;
     let results = [];
 
-    let response = await getAllProductsRequest(currentPage);
+    let response = await getAllProductsRequest(currentPage); //get first page to gather total page info
     const numberOfPages = response.pagination.totalPages;
 
     bar.total = numberOfPages;
-    bar.tick(1);
-    results.push(...response.products);
+    bar.tick(1);    //update progress bar
+    results.push(...response.products); //add first page to final result
 
 
     if(currentPage > numberOfPages) return results;
@@ -37,6 +37,7 @@ const getAllProducts = async () => {
 }
 
 const getAllProductsRequest = async page => { 
+    //referer header needed here, blocked without
     const options = {
         method: "GET",
         url: "https://www.ishopchangi.com/bin/cagcommerce/webservices/v2/cag/products/search.json?pageSize=100&currentPage="+page+"&query=::cagCategory:%2Fbeauty&categoryCodes=travel-electronics-chargers,beauty,food,Womens-fashion&lang=en",
@@ -60,26 +61,20 @@ const getAllProductsRequest = async page => {
 )}
 
 const getVariants = async products => {
-    console.log("Getting Variants");
-    const variantInfo = products.map(p => {
-        return {
-            url: `https://www.ishopchangi.com${p.url.split('.')[0]}.model.json`,
-            code: p.code
-        }
-    });
-    var bar = new ProgressBar(`[:bar] :rate/pps :percent :etas`, {complete: '=', incomplete: ' ', width: 30, total: 1});
+    console.log("Retrieving Variants");
+    const bar = new ProgressBar(`[:bar] :rate/pps :percent :etas`, {complete: '=', incomplete: ' ', width: 30, total: 1});
     const limiter = new Bottleneck({minTime: 20, maxConcurrent: 50});
     const limitedQuery = limiter.wrap(getVariantsRequest);
-    bar.total = variantInfo.length;
+    bar.total = Object.entries(products).length;
 
     let allRequests = [];
-    for (let i = 0; i < variantInfo.length; i++) {
-        allRequests.push(limitedQuery(variantInfo[i].url)
+    for (const [key, value] of Object.entries(products)){
+        allRequests.push(limitedQuery( `https://www.ishopchangi.com${products[key].url.split('.')[0]}.model.json`)
         .then(res => {
             bar.tick(1); 
             if(res[":items"].root[":items"].responsivegrid[":items"].productpage)
                 return {
-                    product: variantInfo[i].code,
+                    product: res[":items"].root[":items"].responsivegrid[":items"].productpage.productId,
                     variants:  res[":items"].root[":items"].responsivegrid[":items"].productpage.product.variantOptions
                 }
         }));
@@ -111,34 +106,37 @@ const getVariantsRequest = async url => {
 )}
 
 const parseProducts = products => {
-    return products.map(p => {
-        let product = {}
-        product.name = p.name;
-        product.manufacturer = p.manufacturer;
-        product.multidimensional = p.multidimensional;
-        product.code = p.code;
-        product.inStock = p.inStock;
-        product.url = p.url;
+    //reduce products to desired fields
+    productMap = {};
+    products.forEach(p => {
+        productMap[p.code] = {};
+        productMap[p.code].name = p.name;
+        productMap[p.code].manufacturer = p.manufacturer;
+        productMap[p.code].multidimensional = p.multidimensional;
+        productMap[p.code].inStock = p.inStock;
+        productMap[p.code].url = p.url;
         if(p.price) {
-            product.price = p.price.value;
-            product.currency = p.price.currencyIso;
-        } else product.price = product.currency = 'na';
-        return product;
+            productMap[p.code].price = p.price.value;
+            productMap[p.code].currency = p.price.currencyIso;
+        } else productMap[p.code].price = productMap[p.code].currency = 'na';
     })
+    return productMap;
 }
 
 const parseVariants = products => {
-    return products.map(p => {
-        let variants = p.variants.map(v => {
+    //reduce variants for desired fields
+    for (const [key, value] of Object.entries(products)){
+        products[key].variants = products[key].variants.map(v => {
             let variant = {};
             variant.code = v.code;
             variant.offers = v.offers.map(o => o.channelPrices.map(cp => {
-                return {"channel": cp.channelCode, "discountedPrice": cp.enDiscountedPrice}
+                return {"channel": cp.channelCode, "discountedPrice": cp.enDiscountedPrice, "shopName": o.shopName}
             }))
+            variant.classifications = v.classifications;
             return variant;
         })
-        return {product: p.product, variants: variants}
-    })
+    }
+    return products;
 }
 
 function flatten(arr) {
